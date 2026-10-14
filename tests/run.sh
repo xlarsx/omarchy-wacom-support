@@ -30,7 +30,7 @@ done
 if python3 -m py_compile scripts/wacom-daemon.py; then ok "daemon compiles"; else bad "daemon compile"; fi
 
 # 4. bash syntax.
-for s in scripts/wacom-status scripts/wacom-ctl; do
+for s in scripts/wacom-status scripts/wacom-ctl scripts/daemon-identity.sh; do
   if bash -n "$s"; then ok "$s syntax"; else bad "$s syntax"; fi
 done
 

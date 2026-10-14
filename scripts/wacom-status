@@ -24,22 +24,10 @@ PID_FILE="$RUNTIME_DIR/omarchy-wacom-support.pid"
 
 # Same identity check as wacom-ctl: a live PID alone is not enough, it
 # must be our daemon (guards against PID reuse after an unclean exit).
+# shellcheck source=daemon-identity.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/daemon-identity.sh"
 is_our_daemon() {
-  local pid="${1:-}"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [[ "$pid" -gt 1 ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  if [[ -r "/proc/$pid/cmdline" ]]; then
-    if { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null | grep -q "wacom-daemon"; then
-      return 0
-    fi
-    return 1
-  fi
-  if command -v ps >/dev/null 2>&1; then
-    ps -p "$pid" -o args= 2>/dev/null | grep -q "wacom-daemon" || return 1
-    return 0
-  fi
-  return 1
+  is_daemon_pid "${1:-}"
 }
 
 present=false
