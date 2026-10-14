@@ -32,10 +32,20 @@ def check(name, cond, detail=""):
         FAILURES.append(name)
 
 
-def spawn_fake_daemon():
-    """Live process whose /proc cmdline contains our 'wacom-daemon' marker."""
+DAEMON_ABS = os.path.join(REPO_ROOT, "scripts", "wacom-daemon.py")
+
+# A sleeper saved as `wacom-daemon.py` in a temp dir: run as
+# `python3 <tmp>/wacom-daemon.py` its argv looks exactly like a daemon's,
+# without opening any device or touching a pidfile.
+_SLEEPER_DIR = tempfile.mkdtemp(prefix="wacom-fake-daemon-")
+FAKE_DAEMON = os.path.join(_SLEEPER_DIR, "wacom-daemon.py")
+with open(FAKE_DAEMON, "w", encoding="utf-8") as _fh:
+    _fh.write("import time\ntime.sleep(30)\n")
+
+
+def spawn(argv):
     proc = subprocess.Popen(
-        ["bash", "-c", "exec -a wacom-daemon-test sleep 30"],
+        argv,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -43,6 +53,24 @@ def spawn_fake_daemon():
     )
     time.sleep(0.2)
     return proc
+
+
+def spawn_fake_daemon(*extra_args):
+    """Live process whose argv matches a daemon: python3 .../wacom-daemon.py."""
+    return spawn(["python3", FAKE_DAEMON] + list(extra_args))
+
+
+def spawn_editor_on_daemon():
+    """Live non-daemon process that merely names the daemon script in its
+    argv, like `nvim scripts/wacom-daemon.py` (tail stands in for the editor).
+    """
+    return spawn(["bash", "-c", 'exec -a nvim tail -f /dev/null "$0"', DAEMON_ABS])
+
+
+def stop(proc):
+    if proc.poll() is None:
+        proc.terminate()
+        proc.wait()
 
 
 def spawn_foreign():
@@ -185,6 +213,56 @@ def main():
     finally:
         fake.terminate()
         fake.wait()
+
+    # 5b. Identity is the exact argv (python3 <path>/wacom-daemon.py [daemon
+    # flags]), not a substring: processes that merely mention the script
+    # (an editor, a one-shot probe, a python one-liner) are not the daemon.
+    editor = spawn_editor_on_daemon()
+    probe = spawn_fake_daemon("--probe")
+    oneliner = spawn(["python3", "-c", "import time; time.sleep(30)", DAEMON_ABS])
+    with_config = spawn_fake_daemon("--config", "/dev/null")
+    try:
+        check(
+            "is_live_daemon rejects editor naming the script",
+            wd.is_live_daemon(editor.pid) is False,
+        )
+        check(
+            "is_live_daemon rejects one-shot --probe",
+            wd.is_live_daemon(probe.pid) is False,
+        )
+        check(
+            "is_live_daemon rejects python one-liner naming the script",
+            wd.is_live_daemon(oneliner.pid) is False,
+        )
+        check(
+            "is_live_daemon accepts daemon started with --config",
+            wd.is_live_daemon(with_config.pid) is True,
+        )
+        runtime_id = tempfile.mkdtemp(prefix="wacom-runtime-id-")
+        with open(os.path.join(runtime_id, "omarchy-wacom-support.pid"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(str(editor.pid))
+        st = run_status(runtime_id)
+        try:
+            payload = json.loads(st.stdout)
+        except ValueError:
+            payload = {}
+        check(
+            "status reports stopped when pidfile names an editor",
+            payload.get("daemon") is False,
+            "got %r" % st.stdout,
+        )
+        # The reported bug: stop/restart (also run by the panel's Save)
+        # SIGTERMed any process whose argv contained the daemon path.
+        res = run_ctl("stop", runtime_dir=tempfile.mkdtemp(prefix="wacom-runtime-ed-"))
+        check(
+            "ctl stop spares an editor holding the daemon script",
+            editor.poll() is None,
+            "out=%r err=%r" % (res.stdout, res.stderr),
+        )
+    finally:
+        for proc in (editor, probe, oneliner, with_config):
+            stop(proc)
 
     # 6. End-to-end: `wacom-ctl stop` must not kill a recycled PID.
     runtime2 = tempfile.mkdtemp(prefix="wacom-runtime-e2e-")
@@ -367,17 +445,21 @@ def main():
 
     # 10. `wacom-ctl stop` sweeps stragglers running the same script path
     # (duplicates from a concurrent-start race), not just the pidfile PID.
+    # The straggler is a real daemon holding its lock in another runtime
+    # dir, so runtime6 has no pidfile for it.
     runtime6 = tempfile.mkdtemp(prefix="wacom-runtime-sweep-")
-    daemon_abs = os.path.join(REPO_ROOT, "scripts", "wacom-daemon.py")
+    stray_runtime = tempfile.mkdtemp(prefix="wacom-runtime-stray-")
     stray = subprocess.Popen(
-        ["bash", "-c", 'exec -a "%s" sleep 30' % daemon_abs],
+        ["python3", DAEMON_ABS],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
+        env=dict(os.environ, XDG_RUNTIME_DIR=stray_runtime,
+                 XDG_STATE_HOME=tempfile.mkdtemp(prefix="wacom-state-stray-")),
     )
     try:
-        time.sleep(0.3)
+        time.sleep(0.5)
         res = run_ctl("stop", runtime_dir=runtime6)
         check(
             "ctl stop sweeps same-script straggler",

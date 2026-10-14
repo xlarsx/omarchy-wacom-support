@@ -131,14 +131,38 @@ def read_pidfile(path):
     return pid if pid > 1 else None
 
 
+PYTHON_RE = re.compile(r"^python[0-9.]*$")
+ONE_SHOT_FLAGS = ("--probe", "--check-config", "--dump-events", "-h", "--help")
+
+
+def is_daemon_argv(argv):
+    """True when *argv* is a long-lived daemon: `python3 .../wacom-daemon.py`
+    plus optional daemon flags (--match/--config), but no one-shot flag.
+
+    Matching the exact argv (not a substring of the cmdline) keeps an editor
+    or pager that has the script open (`nvim wacom-daemon.py`) from being
+    taken for the daemon and SIGTERMed by `wacom-ctl stop`.
+    """
+    if len(argv) < 2:
+        return False
+    if not PYTHON_RE.match(os.path.basename(argv[0])):
+        return False
+    if os.path.basename(argv[1]) != "wacom-daemon.py":
+        return False
+    return not any(arg in ONE_SHOT_FLAGS for arg in argv[2:])
+
+
 def _cmdline_has_daemon(pid):
-    """None when /proc is unavailable, else True/False for our argv marker."""
+    """None when /proc is unavailable, else whether *pid* runs the daemon."""
     try:
         with open("/proc/%d/cmdline" % pid, "rb") as fh:
             data = fh.read()
     except OSError:
         return None
-    return b"wacom-daemon" in data
+    argv = data.decode("utf-8", "replace").split("\0")
+    if argv and argv[-1] == "":
+        argv.pop()
+    return is_daemon_argv(argv)
 
 
 def is_live_daemon(pid):
@@ -172,7 +196,7 @@ def is_live_daemon(pid):
                 text=True,
                 timeout=5,
             )
-            return "wacom-daemon" in (out.stdout or "")
+            return is_daemon_argv((out.stdout or "").split())
         except (OSError, ValueError):
             return False
     return bool(marker)

@@ -7,6 +7,8 @@ PLUGIN_ID="io.github.godisopensource.omarchy-wacom-support"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAEMON="$SCRIPT_DIR/wacom-daemon.py"
 STATUS="$SCRIPT_DIR/wacom-status"
+# shellcheck source=daemon-identity.sh
+source "$SCRIPT_DIR/daemon-identity.sh"
 
 # Private per-user runtime dir. Never falls back to /tmp directly: a
 # world-writable predictable PID path would allow symlink/pre-create
@@ -36,23 +38,9 @@ die() { echo "wacom-ctl: $*" >&2; exit 1; }
 
 # True only when $1 is a LIVE instance of our daemon, not merely a live
 # PID. Closes the PID-reuse window: a recycled PID owned by us would pass
-# `kill -0` but fails the cmdline check and is treated as stale.
+# `kill -0` but fails the argv check and is treated as stale.
 is_our_daemon() {
-  local pid="${1:-}"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [[ "$pid" -gt 1 ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  if [[ -r "/proc/$pid/cmdline" ]]; then
-    if { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null | grep -q "wacom-daemon"; then
-      return 0
-    fi
-    return 1
-  fi
-  if command -v ps >/dev/null 2>&1; then
-    ps -p "$pid" -o args= 2>/dev/null | grep -q "wacom-daemon" || return 1
-    return 0
-  fi
-  return 1
+  is_daemon_pid "${1:-}"
 }
 
 read_pidfile() {
@@ -191,53 +179,40 @@ cmd_stop() {
   fi
 }
 
-# Count live processes running this exact daemon script, excluding ourselves.
-# One-shot probes (`wacom-daemon.py --probe/--check-config/...`) share the
-# script path but carry flags; only the bare long-lived daemon counts.
+# Count live daemons running this exact script, excluding ourselves.
+# One-shot probes (`wacom-daemon.py --probe/--check-config/...`) and
+# processes that merely name the script (an editor) do not count.
 count_daemon_procs() {
   [[ -d /proc ]] || { printf '0'; return 0; }
-  local n=0 proc pid cmd
+  local n=0 proc pid
   for proc in /proc/[0-9]*/cmdline; do
     pid="${proc#/proc/}"
     pid="${pid%/cmdline}"
-    [[ "$pid" =~ ^[0-9]+$ ]] || continue
     [[ "$pid" == "$$" ]] && continue
-    cmd="$({ tr '\0' ' ' < "$proc"; } 2>/dev/null || echo "")"
-    [[ -n "$cmd" ]] || continue
-    case "$cmd" in
-      *"$DAEMON --"*) continue ;;
-      *"$DAEMON"*) n=$((n + 1)) ;;
-    esac
+    is_daemon_pid "$pid" "$DAEMON" && n=$((n + 1))
   done
   printf '%s' "$n"
 }
 
 # SIGTERM any live instance of this exact daemon script beyond the pidfile
 # one (e.g. duplicates from a concurrent-start race under an older version,
-# or a lost pidfile). Matching is by full script path in /proc cmdline —
-# never by bare PID — so recycled PIDs and unrelated processes are safe.
+# or a lost pidfile). Matching is by exact argv (python3 + this script
+# path), never by bare PID or cmdline substring, so recycled PIDs and
+# unrelated processes (an editor with the script open) are safe.
 # Prints the number of duplicate processes signalled.
 sweep_stragglers() {
   [[ -d /proc ]] || { printf '0'; return 0; }
-  local proc pid cmd signalled=0
+  local proc pid signalled=0
   for proc in /proc/[0-9]*/cmdline; do
     pid="${proc#/proc/}"
     pid="${pid%/cmdline}"
-    [[ "$pid" =~ ^[0-9]+$ ]] || continue
     [[ "$pid" == "$$" ]] && continue
-    cmd="$({ tr '\0' ' ' < "$proc"; } 2>/dev/null || echo "")"
-    [[ -n "$cmd" ]] || continue
-    case "$cmd" in
-      *"$DAEMON --"*) continue ;; # one-shot probe, not the daemon
-      *"$DAEMON"*)
-        # kill -0 fails for other users' processes, so only our own
-        # instances are ever signalled.
-        if kill -0 "$pid" 2>/dev/null; then
-          kill -TERM "$pid" 2>/dev/null || true
-          signalled=$((signalled + 1))
-        fi
-        ;;
-    esac
+    # is_daemon_pid's kill -0 fails for other users' processes, so only
+    # our own instances are ever signalled.
+    if is_daemon_pid "$pid" "$DAEMON"; then
+      kill -TERM "$pid" 2>/dev/null || true
+      signalled=$((signalled + 1))
+    fi
   done
   if [[ "$signalled" -gt 0 ]]; then
     for _ in $(seq 1 20); do
