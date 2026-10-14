@@ -88,7 +88,8 @@ scripts/wacom-ctl status        # tablet + daemon + effective mapping
 scripts/wacom-ctl start|stop|restart
 scripts/wacom-ctl probe         # list pad devices and their buttons
 scripts/wacom-ctl test 2        # run button 2's command now
-scripts/wacom-ctl logs          # daemon log
+scripts/wacom-ctl logs          # daemon log (presses, spawns, failures)
+journalctl -t omarchy-wacom-support   # output of the button commands
 scripts/wacom-ctl config        # effective mapping and its source
 python3 scripts/wacom-daemon.py --dump-events  # debug: raw pad events
 ```
@@ -127,7 +128,10 @@ instance exits immediately with "already running". `stop` additionally
 sweeps any leftover same-script stragglers by full script path. The PID
 file itself is created exclusively (`O_EXCL`/`O_NOFOLLOW`, symlink-safe)
 and only unlinked when it still names its own PID. Log in
-`$XDG_STATE_HOME/omarchy-wacom-support/`.
+`$XDG_STATE_HOME/omarchy-wacom-support/`, rotated at startup past 1 MiB
+(one `daemon.log.1` kept). Button commands run under `systemd-cat`, so
+their output (an app launched from a button keeps writing for as long as it
+runs) goes to the journal, tag `omarchy-wacom-support`, not to that log.
 
 ## Remove
 
@@ -143,6 +147,7 @@ omarchy plugin remove io.github.godisopensource.omarchy-wacom-support
   membership (`groups | grep input`, re-login after changes).
 - Button does nothing: `scripts/wacom-ctl config` shows the effective
   mapping and source; `scripts/wacom-ctl logs` shows presses and spawns;
+  `journalctl -t omarchy-wacom-support` shows what the command printed;
   `--dump-events` verifies the kernel sees the press.
 - A press both switches workspace *and* does something in Rnote: expected —
   the listener is passive by design. Leave that button unmapped if you

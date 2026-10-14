@@ -27,6 +27,7 @@ import json
 import os
 import re
 import select
+import shutil
 import signal
 import struct
 import subprocess
@@ -390,6 +391,19 @@ def log_file():
     return os.path.join(state_dir(), "daemon.log")
 
 
+LOG_MAX_BYTES = 1024 * 1024
+
+
+def rotate_log():
+    """At startup, move a log past LOG_MAX_BYTES to daemon.log.1 (one kept)."""
+    path = log_file()
+    try:
+        if os.path.getsize(path) > LOG_MAX_BYTES:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+
+
 def log(msg):
     try:
         with open(log_file(), "a", encoding="utf-8") as fh:
@@ -567,34 +581,44 @@ def resolve_command(config, index):
     return translate_legacy(cmd)
 
 
+JOURNAL_TAG = "omarchy-wacom-support"
+_LOOKUP = object()
+
+
+def command_argv(cmd, systemd_cat=_LOOKUP):
+    """argv for a button command: under systemd-cat when available, so its
+    output goes to the journal (tag JOURNAL_TAG), which rotates on its own.
+    """
+    if systemd_cat is _LOOKUP:
+        systemd_cat = shutil.which("systemd-cat")
+    if systemd_cat:
+        return [systemd_cat, "-t", JOURNAL_TAG, "sh", "-c", cmd]
+    return ["sh", "-c", cmd]
+
+
 def run_command(cmd, index):
     # Fire-and-forget: the child is never waited on nor killed, so launched
-    # apps (terminal, browser…) survive. Its output is appended to the daemon
-    # log instead of /dev/null, so failures stay visible (the panel greps
-    # this log for errors).
+    # apps (terminal, browser…) survive. Its output goes to the journal, not
+    # the daemon log: a long-lived app would otherwise grow the log for as
+    # long as it runs. The panel reads both for recent errors.
     log("button %d -> %s" % (index, cmd))
-    try:
-        logfh = open(log_file(), "ab", buffering=0)
-    except OSError as exc:
-        log("button %d cannot open log: %s" % (index, exc))
-        logfh = None
+    argv = command_argv(cmd)
+    if argv[0] == "sh":
+        log("button %d: systemd-cat not found, command output discarded" % index)
     try:
         proc = subprocess.Popen(
-            ["sh", "-c", cmd],
+            argv,
+            # systemd-cat points the command's stdout/stderr at the journal.
             stdin=subprocess.DEVNULL,
-            stdout=logfh if logfh is not None else subprocess.DEVNULL,
-            stderr=subprocess.STDOUT if logfh is not None else subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
             env=dict(os.environ),
             close_fds=True,
         )
     except OSError as exc:
         log("button %d failed to spawn: %s" % (index, exc))
-        if logfh is not None:
-            logfh.close()
         return
-    if logfh is not None:
-        logfh.close()  # child keeps its own copy; O_APPEND keeps lines intact
     log("button %d spawned (pid %d)" % (index, proc.pid))
 
 
@@ -827,6 +851,7 @@ def main(argv=None):
     pidpath = acquire_pidfile()
     if pidpath is None:
         return 1
+    rotate_log()
     log("daemon started (pid %d)" % os.getpid())
     try:
         monitor(args.match, args.config)
