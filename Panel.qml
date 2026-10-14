@@ -163,9 +163,15 @@ Panel {
     return stateHome + "/omarchy-wacom-support/daemon.log"
   }
 
+  // Recent errors from the daemon log (spawn failures) and the journal,
+  // where button commands write their output (systemd-cat tag). The log
+  // path is passed as $1, never spliced into the script text.
   function refreshError() {
     if (errProc.running) return
-    errProc.command = ["sh", "-c", "tail -n 30 '" + daemonLogPath() + "' 2>/dev/null | grep -iE 'failed|error' | tail -n 4"]
+    errProc.command = ["sh", "-c",
+      "{ tail -n 30 \"$1\" 2>/dev/null; journalctl -t omarchy-wacom-support -n 30 -o cat --no-pager 2>/dev/null; }"
+        + " | grep -iE 'failed|error' | tail -n 4",
+      "sh", daemonLogPath()]
     errProc.running = true
   }
 
