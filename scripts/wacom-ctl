@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CLI for the Wacom Support plugin daemon.
-#   wacom-ctl status [--json] | start | stop | restart | probe | test N | logs | config
+#   wacom-ctl status [--json] | start | stop | restart | resume | probe | test N | logs | config
 set -u
 
 PLUGIN_ID="io.github.godisopensource.omarchy-wacom-support"
@@ -31,6 +31,10 @@ PID_FILE="$RUNTIME_DIR/omarchy-wacom-support.pid"
 # Pre-hardening location (XDG_RUNTIME_DIR:-/tmp). Cleaned opportunistically
 # on start/stop so upgrades don't leave a stale file behind.
 LEGACY_PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/omarchy-wacom-support.pid"
+# Present after a manual `stop`: the bar widgets (one per monitor) skip
+# auto-start while it exists, so their next poll does not undo the Stop.
+# Cleared by start/restart/resume and when the tablet is unplugged.
+PAUSE_FILE="$RUNTIME_DIR/omarchy-wacom-support.paused"
 
 die() { echo "wacom-ctl: $*" >&2; exit 1; }
 
@@ -120,7 +124,11 @@ print('daemon : ' + ('running (pid %s)' % d.get('pid') if d.get('daemon') else '
   python3 "$DAEMON" --check-config
 }
 
+pause_autostart() { : > "$PAUSE_FILE" 2>/dev/null || true; }
+resume_autostart() { rm -f "$PAUSE_FILE" 2>/dev/null || true; }
+
 cmd_start() {
+  resume_autostart
   if daemon_pid >/dev/null; then
     echo "daemon already running (pid $(daemon_pid))"
     return 0
@@ -146,6 +154,7 @@ cmd_start() {
 
 cmd_stop() {
   local pid raw stopped_msg="daemon stopped"
+  pause_autostart
   if ! pid="$(daemon_pid)"; then
     raw="$(read_pidfile)"
     if [[ -n "$raw" ]] && is_our_daemon "$raw"; then
@@ -313,10 +322,11 @@ case "${1:-status}" in
   start) cmd_start ;;
   stop) cmd_stop ;;
   restart) cmd_stop >/dev/null || true; cmd_start ;;
+  resume) resume_autostart ;;
   probe) cmd_probe ;;
   test) shift; cmd_test "$@" ;;
   logs) shift; cmd_logs "$@" ;;
   config) cmd_config ;;
   save-override) shift; cmd_save_override "$@" ;;
-  *) die "usage: wacom-ctl {status|start|stop|restart|probe|test N|logs|config|save-override}" ;;
+  *) die "usage: wacom-ctl {status|start|stop|restart|resume|probe|test N|logs|config|save-override}" ;;
 esac

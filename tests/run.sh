@@ -39,7 +39,7 @@ if command -v node >/dev/null 2>&1; then
   if node -e "
 const fs = require('fs');
 const src = fs.readFileSync('Model.js','utf8');
-const Model = new Function(src + '; return {buttonRows, presets, parseStatus, defaultSettings, autoStartOf};')();
+const Model = new Function(src + '; return {buttonRows, presets, parseStatus, defaultSettings, autoStartOf, shouldAutoStart, shouldClearPause};')();
 const rows = Model.buttonRows({});
 if (rows.length !== 4 || rows[0].command.indexOf('hl.dsp.focus') === -1 || rows[0].command.indexOf('workspace = ') === -1) throw new Error('defaults');
 if (Model.parseStatus('nope').present !== false) throw new Error('parseStatus');
@@ -55,6 +55,20 @@ for (const f of [false, 0, 'false', 'FALSE', '0', '']) {
 if (Model.autoStartOf({autoStart: null}) !== true) throw new Error('autoStart null default');
 if (Model.autoStartOf({autoStart: undefined}) !== true) throw new Error('autoStart undefined default');
 if (Model.autoStartOf({}) !== true) throw new Error('autoStart default');
+// Auto-start fires only for a present tablet with no daemon, once settings
+// are injected, auto-start is on, and the user has not pressed Stop.
+const base = { present: true, daemon: false, settingsSeen: true, autoStart: true, paused: false };
+if (Model.shouldAutoStart(base) !== true) throw new Error('shouldAutoStart base');
+for (const [k, v] of [['present', false], ['daemon', true], ['settingsSeen', false], ['autoStart', false], ['paused', true]]) {
+  if (Model.shouldAutoStart(Object.assign({}, base, {[k]: v})) !== false) throw new Error('shouldAutoStart ' + k + '=' + v);
+}
+// Unplugging the tablet lifts a Stop pause.
+if (Model.shouldClearPause({ present: false, paused: true }) !== true) throw new Error('clear pause on unplug');
+if (Model.shouldClearPause({ present: true, paused: true }) !== false) throw new Error('keep pause while plugged');
+if (Model.shouldClearPause({ present: false, paused: false }) !== false) throw new Error('nothing to clear');
+// parseStatus carries the shared pause flag (missing = not paused).
+if (Model.parseStatus('{\"present\": true, \"paused\": true}').paused !== true) throw new Error('parseStatus paused');
+if (Model.parseStatus('{\"present\": true}').paused !== false) throw new Error('parseStatus paused default');
 "; then ok "Model.js logic"; else bad "Model.js logic"; fi
 else
   echo "skip - node not installed (Model.js check)"
@@ -93,6 +107,13 @@ if python3 tests/test_pidfile.py; then
   : # test prints its own ok lines
 else
   bad "pidfile hardening"
+fi
+
+# 7e. a manual stop pauses widget auto-start until start/restart/resume.
+if python3 tests/test_autostart_pause.py; then
+  : # test prints its own ok lines
+else
+  bad "auto-start pause"
 fi
 
 # 8. pad detection (live; informational when no tablet).
