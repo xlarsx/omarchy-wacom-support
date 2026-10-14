@@ -72,10 +72,23 @@ function autoStartOf(settings) {
   return text === "true" || text === "1";
 }
 
+// Whether the widget should start the daemon on this poll. `paused` comes
+// from wacom-status: set by a manual Stop, so the next poll does not undo it.
+function shouldAutoStart(state) {
+  return state.present === true && state.daemon !== true && state.settingsSeen === true
+    && state.autoStart === true && state.paused !== true;
+}
+
+// Unplugging the tablet lifts a Stop pause (the next plug-in auto-starts).
+function shouldClearPause(status) {
+  return status.present !== true && status.paused === true;
+}
+
+
 // Parse the JSON printed by scripts/wacom-status --json. Never throws;
-// returns { present, name, node, daemon, pid } with safe fallbacks.
+// returns { present, name, node, daemon, pid, paused } with safe fallbacks.
 function parseStatus(raw) {
-  var fallback = { present: false, name: "", node: "", daemon: false, pid: 0 };
+  var fallback = { present: false, name: "", node: "", daemon: false, pid: 0, paused: false };
   var text = String(raw || "").trim();
   if (text === "") return fallback;
   try {
@@ -86,7 +99,8 @@ function parseStatus(raw) {
       name: String(parsed.name || ""),
       node: String(parsed.node || ""),
       daemon: parsed.daemon === true,
-      pid: Number(parsed.pid || 0)
+      pid: Number(parsed.pid || 0),
+      paused: parsed.paused === true
     };
   } catch (e) {
     return fallback;

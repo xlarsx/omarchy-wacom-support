@@ -21,6 +21,8 @@ resolve_runtime_dir() {
 }
 RUNTIME_DIR="$(resolve_runtime_dir)"
 PID_FILE="$RUNTIME_DIR/omarchy-wacom-support.pid"
+# Left by a manual `wacom-ctl stop`; the widgets skip auto-start while set.
+PAUSE_FILE="$RUNTIME_DIR/omarchy-wacom-support.paused"
 
 # Same identity check as wacom-ctl: a live PID alone is not enough, it
 # must be our daemon (guards against PID reuse after an unclean exit).
@@ -95,5 +97,8 @@ json_escape() {
   printf '%s' "$s"
 }
 
-printf '{"present": %s, "name": "%s", "node": "%s", "daemon": %s, "pid": %s}\n' \
-  "$present" "$(json_escape "$name")" "$(json_escape "$node")" "$daemon" "$pid"
+paused=false
+[[ -e "$PAUSE_FILE" ]] && paused=true
+
+printf '{"present": %s, "name": "%s", "node": "%s", "daemon": %s, "pid": %s, "paused": %s}\n' \
+  "$present" "$(json_escape "$name")" "$(json_escape "$node")" "$daemon" "$pid" "$paused"

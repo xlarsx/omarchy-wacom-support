@@ -59,7 +59,17 @@ BarWidget {
     daemonRunning = status.daemon
     daemonPid = status.pid
     probed = true
-    if (tabletPresent && !daemonRunning && settingsSeen && autoStartEnabled())
+    // A manual Stop (from any monitor's panel) leaves a shared pause that
+    // wacom-status reports; unplugging the tablet lifts it.
+    if (Model.shouldClearPause(status))
+      Quickshell.execDetached(["bash", ctlPath, "resume"])
+    if (Model.shouldAutoStart({
+      present: tabletPresent,
+      daemon: daemonRunning,
+      settingsSeen: settingsSeen,
+      autoStart: autoStartEnabled(),
+      paused: status.paused
+    }))
       Quickshell.execDetached(["bash", ctlPath, "start"])
   }
 
